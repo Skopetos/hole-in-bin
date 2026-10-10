@@ -194,8 +194,56 @@ them usable to control program logic (and, later, addresses).
 
 ---
 
-<!-- ex02 … ex11 walkthroughs are added as each challenge is completed. -->
-_ex02 … ex11: in progress._
+### ex02 — overwrite a variable from an environment variable
+
+**Goal (`README.txt`):** see *“you have correctly modified the variable”*.
+
+**Vulnerability class:** stack buffer overflow via `strcpy()` of an attacker-controlled **environment variable** (CWE-121).
+
+**Disassembly (`main`, key lines):**
+
+```asm
+ 804849d: mov    DWORD PTR [esp],0x80485e0   ; "GREENIE"
+ 80484a4: call   getenv@plt                  ; p = getenv("GREENIE")
+ 80484a9: mov    DWORD PTR [esp+0x5c],eax
+ 80484ad: cmp    DWORD PTR [esp+0x5c],0x0    ; p == NULL ?
+ 80484b2: jne    80484c8
+ 80484c3: call   errx@plt                    ;   errx(1,"please set the GREENIE ...")
+ 80484c8: mov    DWORD PTR [esp+0x58],0x0    ; var = 0
+ 80484d4: mov    [esp+0x4], eax              ; src = p
+ 80484d8: lea    eax,[esp+0x18]             ; dst = &buffer
+ 80484df: call   strcpy@plt                  ; strcpy(buffer, p)   <-- overflow
+ 80484e4: mov    eax,DWORD PTR [esp+0x58]
+ 80484e8: cmp    eax,0xd0a0d0a              ; var == 0x0d0a0d0a ?
+ 80484ed: jne    80484fd
+ 80484ef: ... puts("you have correctly modified the variable")
+```
+
+**Reading it:** the tainted input now comes from the **environment** (`getenv("GREENIE")`),
+not argv/stdin — a reminder that *any* externally controlled string is attacker input.
+`strcpy` copies it into `buffer` at `esp+0x18`; the win test compares the variable at
+`esp+0x58` against `0x0d0a0d0a`.
+
+**Offset:** `0x58 − 0x18 = 64` bytes. The target little-endian bytes are `0a 0d 0a 0d`
+(`"\n\r\n\r"`). Because those are newline/CR bytes that a shell would mangle, `scripts/ex02.py`
+sets the variable itself with `execve` and runs the target.
+
+**Exploit (`scripts/ex02.py`):**
+
+```bash
+python3 scripts/ex02.py /opt/hole-in-bin/ex02/bin
+# local: python3 scripts/ex02.py scripts/runlocal.sh challenges/ex02/bin
+```
+
+**Result (verified):** `you have correctly modified the variable` (no env set → `please set the GREENIE environment variable`).
+
+**Key takeaway:** environment variables are untrusted input too. Also: when a payload contains
+non-printable bytes, pass it through `execve`/process args rather than fighting shell quoting.
+
+---
+
+<!-- ex03 … ex11 walkthroughs are added as each challenge is completed. -->
+_ex03 … ex11: in progress._
 
 ---
 
