@@ -388,8 +388,64 @@ format. Use `sprintf(dst, "%s", user)` *and* a bounded `snprintf`.
 
 ---
 
-<!-- ex06 … ex11 walkthroughs are added as each challenge is completed. -->
-_ex06 … ex11: in progress._
+### ex06 — heap overflow: dlmalloc `unlink()` write-what-where
+
+**Goal (`README.txt`):** see *“that wasn't too bad now, was it?”*.
+
+**Vulnerability class:** heap buffer overflow corrupting allocator metadata, exploited through the
+old dlmalloc **`unlink()`** macro (CWE-122 heap overflow → arbitrary write → control-flow hijack).
+This is exploit-education **heap3** (the debug info confirms `heap3/heap3.c`).
+
+**Program (`main`):** `b1=malloc(0x20); b2=malloc(0x20); b3=malloc(0x20);`
+`strcpy(b1,argv[1]); strcpy(b2,argv[2]); strcpy(b3,argv[3]);`
+`free(b3); free(b2); free(b1); puts("...")`. A `winner()` at `0x08048864` prints the target
+message. The allocator is **statically compiled into the binary**, so its behaviour is identical
+on every machine — an exploit that works here works byte-for-byte in the VM.
+
+**Fixed addresses (no PIE, ASLR off):** heap base `0x804c000`; `b1=0x804c008`, `b2=0x804c030`,
+`b3=0x804c058`; chunk3 header at `0x804c050/0x804c054`; `puts@GOT = 0x804b128`.
+
+**The primitive.** Old dlmalloc has no safe-unlinking checks:
+```
+unlink(P):  FD = P->fd;  BK = P->bk;  *(FD+12) = BK;  *(BK+8) = FD;
+```
+Pick `FD = puts_GOT − 12` and `BK = X` ⇒ the first write sets `puts_GOT = X`. We then make `puts`
+jump to `X`. Because `unlink` also does a *second* write (`*(BK+8)=FD`) and `winner` is in
+read-only `.text`, `X` can't be `winner` directly — so `X` is a tiny **trampoline on the heap**
+(`jmp +0xa ; push winner ; ret`) and the second write lands harmlessly in its padding.
+
+**Making it fire cleanly** (the hard part):
+- *NUL-free:* `strcpy`/`argv` stop at NUL, so every dword in the payload avoids `0x00`
+  (we use `0xfffffff8 = −8`, `0xfffffffc`, addresses like `0x804b11c`, etc.).
+- *Trigger on the first free:* frees run `b3,b2,b1`; firing the unlink during `free(b3)` means the
+  later frees can't clobber our crafted `fd/bk`. We overflow `b2` to set
+  `chunk3->prev_size = −8` (so the fake chunk `P = chunk3+8 = b3`) and clear `chunk3`'s
+  `PREV_INUSE` bit, which makes `free(b3)` back-consolidate and `unlink(P)`.
+- *Survive the rest of `free`:* we make the bogus `nextchunk` look in-use (odd byte at
+  `nextchunk+4`) so `free` skips its forward-consolidation unlink and returns normally.
+- *Executable heap:* a 32-bit exec-stack binary runs with the kernel's `READ_IMPLIES_EXEC`
+  personality on real i386 Linux, so the heap trampoline is runnable.
+
+**Exploit (`scripts/ex06.py`):** builds the three args and `execve`s the target.
+
+```bash
+python3 scripts/ex06.py /opt/hole-in-bin/ex06/bin
+```
+
+**Result (verified):** `that wasn't too bad now, was it? @ <number>`.
+Verified end-to-end on the host by emulating the VM's i386 personality
+(`READ_IMPLIES_EXEC` + ASLR off); in GDB the sequence is: `free(b3)` runs `unlink` →
+`puts@GOT` becomes `0x804c068` (the trampoline) → `puts(...)` jumps there → `push winner; ret` →
+the message prints. Requires `kernel.randomize_va_space = 0` in the VM (the default for these labs).
+
+**Key takeaway:** heap metadata is as attacker-reachable as stack data. Overflowing one chunk into
+the next chunk's header turns `free()` into an arbitrary write. Modern allocators add safe-unlinking
+(`corrupted double-linked list` checks), heap canaries and pointer mangling precisely to kill this.
+
+---
+
+<!-- ex07 … ex11 walkthroughs are added as each challenge is completed. -->
+_ex07 … ex11: in progress._
 
 ---
 
