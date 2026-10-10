@@ -528,8 +528,47 @@ rejected under `_FORTIFY_SOURCE`).
 
 ---
 
-<!-- ex09 … ex11 walkthroughs are added as each challenge is completed. -->
-_ex09 … ex11: in progress._
+### ex09 — format string → GOT overwrite → control-flow hijack
+
+**Goal (`README.txt`):** see *“code execution redirected! you win”*.
+
+**Vulnerability class:** format-string vulnerability (CWE-134) escalated to **control-flow
+hijack** by overwriting a GOT entry (made possible by **no RELRO** — the GOT is writable).
+
+**Disassembly (`vuln`):** `fgets(buf,0x200,stdin)` → `printf(buf)` → **`exit(1)`**. A `hello()`
+at `0x080484b4` prints the win string then `_exit(1)`.
+
+**The idea:** there is no `target` variable to flip — we redirect *execution*. Right after the
+vulnerable `printf`, the program calls `exit(1)`. `exit` is dispatched through its GOT slot
+(`exit@GOT = 0x08049724`), which is lazily bound and writable. Overwrite it with `&hello`
+(`0x080484b4`) and the `exit(1)` call jumps straight into `hello()`.
+
+**Offset:** buffer at `printf` argument **#4**. Two `%hn` short writes (smaller half first):
+
+```
+[&exit_GOT+2][&exit_GOT] %2044c%4$hn %31920c%5$hn
+  -> exit_GOT+2 = 0x0804 , exit_GOT = 0x84b4  => exit@GOT = 0x080484b4 = &hello
+```
+
+**Exploit (`scripts/ex09.py`):**
+
+```bash
+python3 scripts/ex09.py | /opt/hole-in-bin/ex09/bin
+```
+
+**Result (verified):** `code execution redirected! you win`. In GDB, `exit@GOT` becomes
+`0x80484b4` after the `printf`, and the `exit(1)` call enters `hello`. (`hello` ends with
+`_exit`, which doesn't flush stdio, so when piped the buffered line can be dropped; on a terminal —
+the VM — it prints. Verified locally with a PTY.)
+
+**Key takeaway:** a format-string bug is not just an info leak or a data tweak — overwriting the
+**GOT** converts it into arbitrary code redirection. **Full RELRO** (`-Wl,-z,relro,-z,now`) makes
+the GOT read-only after startup and defeats this class of attack.
+
+---
+
+<!-- ex10 … ex11 walkthroughs are added as each challenge is completed. -->
+_ex10 … ex11: in progress._
 
 ---
 
