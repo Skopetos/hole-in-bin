@@ -17,6 +17,17 @@ pop a shell, …). Per the project rules, **all** reverse engineering was done w
 - [Methodology](#methodology)
 - [Challenge Walkthroughs](#challenge-walkthroughs)
   - [ex00 — overwrite an adjacent variable](#ex00--overwrite-an-adjacent-variable)
+  - [ex01 — overwrite a variable with an exact value](#ex01--overwrite-a-variable-with-an-exact-value)
+  - [ex02 — overwrite a variable from an environment variable](#ex02--overwrite-a-variable-from-an-environment-variable)
+  - [ex03 — overwrite a function pointer](#ex03--overwrite-a-function-pointer-first-control-flow-hijack)
+  - [ex04 — overwrite the saved return address](#ex04--overwrite-the-saved-return-address)
+  - [ex05 — `sprintf` overflow (and a format-string bug)](#ex05--sprintf-overflow-and-a-format-string-bug)
+  - [ex06 — heap: dlmalloc `unlink()` write-what-where](#ex06--heap-overflow-dlmalloc-unlink-write-what-where)
+  - [ex07 — format string: write a value with `%n`](#ex07--format-string-write-a-value-with-n)
+  - [ex08 — format string: large value via two `%hn`](#ex08--format-string-large-value-via-two-hn-short-writes)
+  - [ex09 — format string → GOT overwrite](#ex09--format-string--got-overwrite--control-flow-hijack)
+  - [ex10 — heap overflow into a function pointer](#ex10--heap-overflow-into-an-adjacent-function-pointer)
+  - [ex11 — heap write-what-where → GOT](#ex11--heap-overflow--pointer-corruption--write-what-where--got)
 - [Remediation Suggestions](#remediation-suggestions)
 - [Ethical Hacking Report](#ethical-hacking-report)
 - [Bonus](#bonus)
@@ -87,6 +98,26 @@ The same disciplined loop was applied to every binary:
 ---
 
 ## Challenge Walkthroughs
+
+Summary of the ladder (each links to its full section above in the ToC):
+
+| # | Win message | Vulnerability | Primitive used | Exploit |
+|---|-------------|---------------|----------------|---------|
+| ex00 | changed the 'modified' variable | `gets` stack overflow | overwrite adjacent variable | `ex00.py` |
+| ex01 | got the variable to the right value | `strcpy(argv[1])` overflow | overwrite variable with exact value | `ex01.py` |
+| ex02 | correctly modified the variable | `strcpy(getenv)` overflow | overwrite variable from env var | `ex02.py` |
+| ex03 | code flow successfully changed | `gets` overflow | overwrite a called function pointer | `ex03.py` |
+| ex04 | code flow successfully changed | `gets` overflow | overwrite saved return address | `ex04.py` |
+| ex05 | hit the target correctly | `sprintf(buf, user)` | overflow (+ format-string bonus) | `ex05.py` |
+| ex06 | that wasn't too bad… | heap overflow | **dlmalloc `unlink` write-what-where** → GOT | `ex06.py` |
+| ex07 | modified the target | `printf(user)` | `%n` write of a value | `ex07.py` |
+| ex08 | modified the target | `printf(user)` | two `%hn` short writes (large value) | `ex08.py` |
+| ex09 | code execution redirected! | `printf(user)` | `%hn` → **GOT overwrite** → `hello` | `ex09.py` |
+| ex10 | level passed | heap overflow | overwrite adjacent heap function pointer | `ex10.py` |
+| ex11 | and we have a winner | heap overflow | **write-what-where** → GOT overwrite | `ex11.py` |
+
+All twelve were verified (win message reproduced). See each section for the disassembly,
+the exact offsets/addresses, and the reasoning.
 
 ### ex00 — overwrite an adjacent variable
 
@@ -660,25 +691,96 @@ ASLR + heap hardening so a single overwrite can't reach the GOT.
 
 ## Remediation Suggestions
 
-_General + per-vulnerability fixes. Filled in as challenges complete. Baseline for ex00:_
+Every challenge comes down to **untrusted input reaching memory with no bounds and no modern
+defenses**. Fixes fall into three layers.
 
-- **Never use `gets()`** — replace with `fgets(buf, sizeof(buf), stdin)` which bounds the read.
-- Build with modern defenses: `-fstack-protector-strong` (canary), `-D_FORTIFY_SOURCE=2`,
-  `-Wl,-z,relro,-z,now` (full RELRO), non-executable stack (default), and `-pie -fPIE` + ASLR.
-- Compiler warnings (`-Wall -Wextra`) flag `gets()` as dangerous; treat them as errors in CI.
+### 1. Fix the code (root cause)
+
+| Bug (challenges) | Dangerous API | Safe replacement |
+|------------------|---------------|------------------|
+| Unbounded read (ex00, ex03, ex04) | `gets(buf)` | `fgets(buf, sizeof buf, stdin)` |
+| Unbounded copy (ex01, ex02, ex05, ex06, ex10, ex11) | `strcpy(dst, src)` | `snprintf`/`strlcpy` with the real `dst` size; validate length first |
+| Format string (ex05, ex07, ex08, ex09) | `printf(user)`, `sprintf(buf, user)` | `printf("%s", user)`, `snprintf(buf, n, "%s", user)` — **never** pass user data as the format |
+| Heap metadata / adjacent pointers (ex06, ex10, ex11) | overflowing a chunk/buffer next to a pointer | bound every write; keep code pointers out of attacker-reachable buffers; use indices/handles |
+
+Supporting practices: validate and bound **all** external input (argv, stdin, env vars — ex02 is a
+reminder env vars are attacker-controlled); compile with `-Wall -Wextra -Werror` (the toolchain
+flags `gets`/`%n` misuse); run static analysis and fuzzing on input parsers.
+
+### 2. Compiler & linker hardening (defense in depth)
+
+The binaries were built with **everything off**. Rebuild with:
+
+- `-fstack-protector-strong` — stack **canary**; detects return-address overwrites (ex04) before `ret`.
+- `-D_FORTIFY_SOURCE=2 -O2` — fortified `strcpy`/`sprintf`/`printf`; rejects `%n` in writable-memory
+  format strings (kills ex05/ex07/ex08/ex09 as written).
+- `-Wl,-z,relro,-z,now` — **Full RELRO**; makes the GOT read-only after startup (defeats ex09, ex11).
+- `-pie -fPIE` — **PIE**; randomizes code/GOT addresses so the fixed addresses used in ex03–ex11
+  are no longer known without a leak.
+- Non-executable stack/heap (default `-z noexecstack`, i.e. **NX**) — stops shellcode and the ex06
+  heap trampoline.
+
+### 3. OS / runtime hardening
+
+- Enable **ASLR**: `sysctl kernel.randomize_va_space=2` — randomizes stack, heap, libs, breaking
+  every exploit here that relies on a fixed address.
+- Keep a modern allocator (glibc ≥ 2.26-era) with **safe unlinking**, `tcache`/unlink integrity
+  checks and pointer mangling — the ex06 `unlink` write-what-where is impossible on a current glibc.
+- Drop privileges, sandbox parsers (seccomp), and monitor for crashes (a crashing service is often a
+  probe in progress).
+
+> **One-line summary:** bound the writes, never trust input as a format, and turn on
+> canary + Full RELRO + NX + PIE + ASLR. Any *one* of those defenses would have blocked several of
+> these challenges; together they would have stopped all of them without a memory-disclosure bug.
 
 ---
 
 ## Ethical Hacking Report
 
 ### Importance of proper authorization
-_TODO._
+All work in this project was performed **only** inside the provided, isolated lab VM, against
+binaries the project explicitly ships for this purpose. That is the entire ethical basis for the
+exercise: the same buffer-overflow and format-string techniques are, in a different context, serious
+criminal activity. Authorization must be **explicit, written, and scoped** before any testing —
+typically a signed engagement contract / statement of work or a program's published bug-bounty
+scope — defining *which* systems, *which* techniques, *what* time window, and *who* to contact.
+"It was only a test" or "I didn't cause damage" is not a defense; the act of exploiting a system you
+were not authorized to touch is itself the violation. Absence of a clear scope means **no**
+authorization — when in doubt, stop and ask.
 
 ### Legal and ethical boundaries
-_TODO._
+- **Legal:** unauthorized access, even without damage, is illegal under laws such as the US Computer
+  Fraud and Abuse Act (CFAA), the UK Computer Misuse Act, and the EU Directive 2013/40 / national
+  equivalents (e.g. Greek Law 4411/2016 implementing the Budapest Convention). Penalties scale with
+  intent and impact and can include criminal liability.
+- **Stay in scope:** test only the agreed assets; do not pivot to out-of-scope hosts, exfiltrate real
+  user data, degrade availability (DoS), or persist beyond the engagement.
+- **Minimise impact:** prefer the least-invasive proof of a vulnerability (e.g. flipping a flag or
+  calling a `winner()` function, as here) over destructive demonstrations; work on copies/lab images,
+  not production, whenever possible.
+- **Protect findings:** vulnerability details and any captured data are sensitive — store them
+  securely, share them only with the authorised owner, and destroy them when the engagement ends.
+- **Honesty:** report what you actually did and found, including failed attempts and anything that
+  could have caused side effects.
 
 ### Responsible disclosure practices
-_TODO._
+When a real vulnerability is found (outside a lab), the goal is to get it fixed while minimising harm:
+
+1. **Report privately to the vendor/owner first** — via a security contact, `security.txt`, or a
+   bug-bounty platform — with enough detail to reproduce (affected version, steps, PoC) and a
+   suggested fix.
+2. **Give a reasonable remediation window** before any public disclosure — commonly ~90 days
+   (coordinated disclosure), adjusted for severity and vendor responsiveness.
+3. **Coordinate** on a fix, a CVE, and a disclosure date; request a patched release be available to
+   users before technical details go public.
+4. **Do not** weaponise, sell, trade, or leak the vulnerability, and do not access or retain real
+   user data while investigating.
+5. **Publish responsibly** after the fix: a write-up that helps defenders understand and patch,
+   crediting the vendor's cooperation — the same educational spirit as this README.
+
+This mirrors what the project is training for: vulnerability researchers, malware analysts and
+security engineers use exactly these skills to **protect** systems — the technique is neutral; the
+authorization and the intent are what make it ethical.
 
 ---
 
