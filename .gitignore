@@ -1,2 +1,11 @@
+# Assignment briefs (not part of the deliverable)
 audit.md
 info.md
+
+# Large / untrusted VM artifacts — never commit these
+vm/
+*.ova
+*.vmdk
+*.img
+*.raw
+*.qcow2
